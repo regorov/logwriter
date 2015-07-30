@@ -29,7 +29,7 @@ func BenchmarkWriteWitoutMutex(b *testing.B) {
 
 func BenchmarkWrite(b *testing.B) {
 
-	lw, err := logwriter.NewLogWriter("withmutex", logwriter.LogWriterConfig{MaxDuration: 200 * time.Millisecond, ArchivePath: "./arch"}) //maxSize: 1024 * 1024})
+	lw, err := logwriter.NewLogWriter("withmutex", logwriter.LogWriterConfig{MaxDuration: 200 * time.Millisecond, ArchivePath: ""}) //maxSize: 1024 * 1024})
 	if err != nil {
 		b.Fatal(err)
 	}
