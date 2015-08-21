@@ -35,7 +35,35 @@ Package is under development
 - [ ] Add examples
 
 ## Examples
-TBD
+
+Using standard log package
+```
+import (
+  "log"
+  "time"
+  "github/regorov/logwriter"
+)
+
+func main() {
+	lw, err := logwriter.NewLogWriter("myweb", 
+	                                 &logwriter.Config{BufferSize: 10 * 1024 * 1024, 
+	                                                   SwitchInterval : time.Second,
+	                                                   SwitchInterval : 1 * time.Hour,
+	                                                   Path: "/var/log/myweb",
+	                                                   ArchivePath: "/var/log/myweb/arch", 
+	                                                   Mode: logwriter.ProductionMode}) 
+	if err != nil {
+		panic(err)
+	}
+
+	logger := log.New(lw, "myweb", log.Ldate | log.Ltime)
+	logger.Println("Module started")
+	
+	
+	lw.Close()
+	return
+}
+```
 
 ## License
 MIT
