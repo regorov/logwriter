@@ -1,4 +1,11 @@
-// Package logwriter automates log file writing routines.
+// Package logwriter offers a rich log file writing tools.
+//
+// There is single "hot" log file per LogWriter.
+// Usually file name is similar to servicename name and located in /var/log/servicename.
+// All log items goes into "hot" file.
+//
+// There are "cold" log files. In accordance to rules specified by Config,
+// logwiter freezes content of "hot" file by moving content to "cold" files.
 package logwriter
 
 import (
@@ -10,159 +17,242 @@ import (
 	"time"
 )
 
+// It is allowed to change default values listed above. Change it before calling NewLogWriter().
 var (
-	// Default extension for log files. Change it if required.
-	LogFileExtension string = ".log"
+	// Default extension for 'hot' log file.
+	HotFileExtension string = "log"
 
-	// Default extension for trace files. Change it if required.
-	TraceFileExtension string = ".trc"
+	// Default extension for 'cold' log files.
+	ColdFileExtension string = "log"
+
+	// Default extension for trace files. (Not implemented yet)
+	TraceFileExtension string = "trc"
 )
 
-// RunningMode specifies application running mode
+// RunningMode represents application running mode
 type RunningMode int
 
+// Supported running mode options
 const (
-	// Writes into file and os.Stdout
+	// Writes to the "hot" file and os.Stdout
 	DebugMode RunningMode = 0
 
-	// Writes into file
+	// Writes to the "hot" file only
 	ProductionMode RunningMode = 1
 )
 
-// Config stores LogWriter parameters
+// Config holds parameters of LogWriter instance.
 type Config struct {
 	// Current running mode
 	Mode RunningMode
 
-	// Output buffer size
+	// Output buffer size. Buffering disabled if value == 0
 	BufferSize int
 
-	// Buffer flush to HDD every
+	// Flush buffer to disk every BufferFlushInterval (works if BufferSize > 0)
 	BufferFlushInterval time.Duration
 
-	// Create new log file if existing size is over
-	SwitchSize int64
+	// Freeze hot file when size reaches HotMaxSize (value in bytes)
+	HotMaxSize int64
 
-	// Create new log file every SwitchInterval (after the 1st log item arrival)
-	SwitchInterval time.Duration
+	// Freeze hot file every FreezeInterval if value > 0
+	FreezeInterval time.Duration
 
-	// Create new log file at midnight
-	SwitchAtMidnight bool
+	// Freeze hot file at midnight
+	FreezeAtMidnight bool
 
-	// Where to create active log file
-	Path string
+	// Folder where to open/create hot log file
+	HotPath string
 
-	// Where to copy log file after 'switching'
-	ArchivePath string
+	// Folder where to copy cold file (frozen hot file)
+	ColdPath string
 }
 
-
-// LogWriter wraps io.Writer to automate routine with log files
+// LogWriter wraps io.Writer to automate routine with log files.
 type LogWriter struct {
 	w io.Writer
 	sync.RWMutex
 
-	// LW instance configration
+	// instance configration
 	config Config
 
-	buf []byte
-	buftotal int 
+	// buffer with capacity config.BufferSize
+	buffer []byte
 
+	// buffer allocated
+	bufferLen int
+
+	// hot and cold file name prefix
 	uid string
-	f   *os.File
 
-	// coming midnight
-	midnigth time.Time
+	// hot file handle
+	f *os.File
 
-	// active log file length
-	total int64
+	// hot file current size
+	filelen int64
 
-	// active log file name (usually $uid.log)
-	fileName string
+	// function to sync call in case of i/o error
+	errHandler func(error)
 
-	// time of next log file swithing. If IsZero() == true, feature not used
-	switchTime time.Time
+	// request to stop all active timers
+	stopTimersSignal chan bool
+
+	// timers are stopped notification
+	done chan bool
+
+	// error raised in background
+	err error
+
+	// reference to func
+	coldFileNameFormatter func(string, string, time.Duration) string
+
+	// save public variable HotFileExtension to prevent racing
+	hotFileExtension string
+
+	// save public variable CotFileExtension to prevent racing
+	coldFileExtension string
 }
 
+// NewLogWriter creates new LogWriter, opens/creates hot file "%uid%.log". Hot file
+// freezes immediately if freezeExisting is true and non-empty file size > 0.
+func NewLogWriter(uid string, cfg *Config, freezeExisting bool, errHanldler func(error)) (*LogWriter, error) {
 
-// NewLogWriter creates new LogWriter and main log file
-func NewLogWriter(uid string, cfg *Config) (lw *LogWriter, err error) {
-
-	lw = &LogWriter{
-		uid:     uid,
-		RWMutex: sync.RWMutex{}}
+	lw := &LogWriter{
+		uid:                   uid,
+		RWMutex:               sync.RWMutex{},
+		stopTimersSignal:      make(chan bool),
+		done:                  make(chan bool),
+		errHandler:            errHanldler,
+		coldFileNameFormatter: defaultColdNameFormatter,
+		hotFileExtension:      HotFileExtension,
+		coldFileExtension:     ColdFileExtension}
 
 	if cfg != nil {
 		lw.config = *cfg
 	}
 
 	if lw.config.BufferSize > 0 {
-		// reserve double len
-		lw.buf = make([]byte, cfg.BufferSize*2)
+		lw.buffer = make([]byte, cfg.BufferSize)
 	}
 
-	if err := lw.createLogFile(); err != nil {
+	if err := lw.initHotFile(); err != nil {
 		return nil, err
 	}
+
+	if freezeExisting && lw.filelen > 0 {
+		// non-empty hot log file found and must be frozen
+		if err := lw.freezeHotFile(false); err != nil {
+			return nil, err
+		}
+	}
+
+	lw.startTimers()
 
 	return lw, nil
 }
 
-// SetConfig updates LogWriter config parameters
-func (lw *LogWriter)SetConfig(cfg *Config) {
-	
+// SetColdNameFormatter replaces default 'cold' file name generator.
+// Default format is "$uid-20060102-150405[.00000].log" implemented by
+// function defaultColdNameFormatter().
+func (lw *LogWriter) SetColdNameFormatter(f func(string, string, time.Duration) string) {
 	lw.Lock()
+	lw.coldFileNameFormatter = f
+	lw.Unlock()
+	return
+}
+
+// SetErrorFunc assigns callback function to be called when BACKGROUND i/o fails. See running() as instance.
+// logwriter public functions return error withoug calling specified function.
+// Please be carefull, specified user function calls synchronously!
+func (lw *LogWriter) SetErrorFunc(f func(error)) {
+	lw.Lock()
+	lw.errHandler = f
+	lw.Unlock()
+	return
+}
+
+// Close stops timers, flushes buffers and closes hot file. Please call this function
+// at the end of your program.
+func (lw *LogWriter) Close() error {
+
+	lw.stopTimers()
+
+	lw.Lock()
+	err := lw.close()
+	lw.Unlock()
+	return err
+}
+
+func (lw *LogWriter) close() error {
+	if err := lw.flush(false); err != nil {
+		return err
+	}
+	return lw.f.Close()
+}
+
+// SetConfig updates LogWriter config parameters. Func stops timers, flushes buffer,
+// applies new Config, recreate buffer if need, starts timers.
+func (lw *LogWriter) SetConfig(cfg *Config) error {
+
+	lw.stopTimers()
+
+	lw.Lock()
+
+	if err := lw.flush(false); err != nil {
+		lw.startTimers()
+		lw.Unlock()
+		return err
+	}
+
 	if cfg == nil {
 		lw.setConfig(&Config{})
 	} else {
 		lw.setConfig(cfg)
 	}
+
+	lw.startTimers()
 	lw.Unlock()
-	
-	return
+
+	return nil
 }
 
+func (lw *LogWriter) setConfig(cfg *Config) {
 
-func (lw *LogWriter)setConfig(cfg *Config) {
-	
-	oldmode := lw.config.Mode
+	oldMode := lw.config.Mode
+	oldBufferSize := lw.config.BufferSize
+
 	lw.config = *cfg
-	
-	if  oldmode != cfg.Mode {
+
+	if oldMode != cfg.Mode {
 		lw.setMode(cfg.Mode)
 	}
-		
-	return
-}
 
-// Close flushes file buffer and closes log file
-func (lw *LogWriter) Close() (err error) {
-	lw.Lock()
-	err = lw.close()
-	lw.Unlock()
-	return
-}
-
-func (lw *LogWriter) close() (err error) {
-
-	if lw.f == nil {
-		return nil
+	// recreate buffer if required
+	if oldBufferSize != cfg.BufferSize {
+		if cfg.BufferSize > 0 {
+			lw.buffer = make([]byte, cfg.BufferSize)
+		} else {
+			lw.buffer = nil
+		}
 	}
 
-	// TODO: flushbuffer
-
-	return lw.f.Close()
+	return
 }
 
+// SetMode changes LogWriter running mode. Default value is ProductionMode
+// Default value can be overwritten in NewLogWriter() or changed later by SetMode
 func (lw *LogWriter) SetMode(mode RunningMode) {
 	lw.Lock()
 	lw.setMode(mode)
 	lw.Unlock()
+	return
 }
 
 func (lw *LogWriter) setMode(mode RunningMode) {
 
-	
+	// There is no check lw.mode == mode
+	// because initHotFile() retrives new *os.File handle and should be reassigned in lw.w
+
 	if mode == DebugMode {
 		if lw.f != nil {
 			lw.w = io.MultiWriter(lw.f, os.Stdout)
@@ -176,109 +266,238 @@ func (lw *LogWriter) setMode(mode RunningMode) {
 			lw.w = os.Stderr
 		}
 	}
-	
-	lw.config.Mode = mode
 
+	lw.config.Mode = mode
 
 	return
 }
 
-// Write 'overrides' the underlying io.Writer's Write method.
-func (lw *LogWriter) Write(p []byte) (n int, err error) {
-
-	// TODO: buffered i/o
-	if len(p) == 0 {
-		return 0, nil
-	}
-	
-	lw.Lock()
-	
-	
-	if len(lw.buf) > 0 {
-		if 	len(p) + lw.buftotal < len(lw.buf)/2 {
-			copy(lw.buf[lw.buftotal:], p)
-			lw.buftotal += len(p)
-			lw.Unlock()
-			return len(p), nil
-		} else {
-			p = lw.buf[:lw.buftotal]
-			lw.buftotal = 0
-		}
-	} 
-	
-	 
-	
-	n, err = lw.w.Write(p)
-
-	if err != nil {
-		lw.Unlock()
-		return n, err
-	}	
-
-	lw.total += int64(n)
-		
-	doSwitch := (lw.config.SwitchSize > 0 && lw.config.SwitchSize < lw.total) ||
-		(lw.config.SwitchInterval != 0 && !lw.switchTime.IsZero() && time.Now().After(lw.switchTime))
-
-	if !doSwitch {
-		if lw.switchTime.IsZero() {
-			lw.switchTime = time.Now().Add(lw.config.SwitchInterval)
-		}
-
-		doSwitch = lw.config.SwitchAtMidnight && time.Now().After(lw.midnigth)
-	}
-
-	if doSwitch {
-		err = lw.switchFile()
-	}
-	
-	
-	lw.Unlock()
-
-	return n, err
+// FlushBuffer flushes buffer if buffering enabled and buffer is not empty
+func (lw *LogWriter) FlushBuffer() error {
+	return lw.flushBuffer(false)
 }
 
-// ForceSwitchFile immediately archives active log file
-func (lw *LogWriter) ForceSwitchFile() (err error) {
+func (lw *LogWriter) flushBuffer(byTimer bool) error {
 	lw.Lock()
-	err = lw.switchFile()
+	err := lw.flush(byTimer)
 	lw.Unlock()
 	return err
 }
 
-//
-func (lw *LogWriter) switchFile() error {
+func (lw *LogWriter) flush(byTimer bool) error {
 
-	// close() file if it's open
+	if lw.config.BufferSize == 0 || lw.bufferLen == 0 {
+		return nil
+	}
+
+	n, err := lw.w.Write(lw.buffer[:lw.bufferLen])
+
+	if err != nil {
+		if byTimer && lw.errHandler != nil {
+			lw.errHandler(err)
+			return nil
+		}
+		return err
+	}
+
+	lw.filelen += int64(n)
+	lw.bufferLen = 0
+
+	return nil
+}
+
+// runner triggers time based actions
+func (lw *LogWriter) runner(cfg Config) {
+
+	bufferFlushTimer := time.NewTimer(cfg.BufferFlushInterval)
+	midnightTimer := time.NewTimer(time.Second)
+	fileFreezeTimer := time.NewTimer(cfg.FreezeInterval)
+
+	// All non required Timers are stopped. It allows to use single select{} operator
+	// May be separate runners will be more efficient. Benchmarking required
+	if cfg.BufferFlushInterval == 0 {
+		bufferFlushTimer.Stop()
+	}
+
+	if !cfg.FreezeAtMidnight {
+		midnightTimer.Stop()
+	}
+
+	if cfg.FreezeInterval == 0 {
+		fileFreezeTimer.Stop()
+	}
+
+	// variables required for midnight passing identification
+	// comparing date of last triggering with current
+	now := time.Now()
+	prev := now
+
+	for {
+		select {
+		case _ = <-lw.stopTimersSignal:
+			// stop all timers and exit
+			bufferFlushTimer.Stop()
+			fileFreezeTimer.Stop()
+			midnightTimer.Stop()
+			lw.done <- true
+			return
+		case _ = <-bufferFlushTimer.C:
+			lw.flushBuffer(true)
+
+			// Reset timer to compensate i/o time
+			_ = bufferFlushTimer.Reset(cfg.BufferFlushInterval)
+			break
+		case _ = <-fileFreezeTimer.C:
+			lw.freezeHotFile(true)
+
+			// Reset timer to compensate i/o time
+			_ = fileFreezeTimer.Reset(cfg.FreezeInterval)
+
+			if bufferFlushTimer != nil {
+				_ = bufferFlushTimer.Reset(cfg.BufferFlushInterval)
+			}
+
+			break
+		case now = <-midnightTimer.C:
+			if prev.Day() != now.Day() {
+				prev = now
+
+				lw.freezeHotFile(true)
+
+				if cfg.FreezeInterval != 0 {
+					_ = fileFreezeTimer.Reset(cfg.FreezeInterval)
+				}
+
+				if cfg.BufferFlushInterval != 0 {
+					_ = bufferFlushTimer.Reset(cfg.BufferFlushInterval)
+				}
+			}
+			break
+
+		}
+	}
+}
+
+// FreezeHotFile freezes hot file. Freeze steps: flush buffer, close file, rename hot file to
+// temporary file in the same folder, rename/move temp file to cold file (async), create new hot file.
+func (lw *LogWriter) FreezeHotFile() error {
+	return lw.freezeHotFile(false)
+}
+
+func (lw *LogWriter) freezeHotFile(byTimer bool) error {
+	lw.Lock()
+	err := lw.flush(byTimer)
+	if err != nil {
+		lw.Unlock()
+		return err
+	}
+	err = lw.freeze(byTimer)
+
+	if lw.config.FreezeInterval != 0 {
+		// TODO:  Reset timer in running()
+	}
+
+	lw.Unlock()
+
+	return err
+
+}
+
+func (lw *LogWriter) freeze(byTimer bool) error {
+
+	if lw.filelen == 0 {
+		// nothing to do if file is empty
+		return nil
+	}
+
 	if lw.f != nil {
 		if err := lw.f.Close(); err != nil {
 			return err
 		}
+	} else {
+		return nil // TODO: Error
 	}
 
-	tmpName := fmt.Sprintf("%s-%d", lw.uid, time.Now().UnixNano()) // Format("2006-01-02T15-04-05-.000000")
-	tmpFullName := filepath.Join(lw.config.Path, tmpName)
+	coldName := lw.coldFileNameFormatter(lw.uid, lw.coldFileExtension, lw.config.FreezeInterval)
+	coldFullName := filepath.Join(lw.config.HotPath, coldName)
 
-	if err := os.Rename(lw.f.Name(), tmpFullName); err != nil {
+	// rename hot file. Keep cold file in the same folder (it is faster)
+	if err := os.Rename(lw.f.Name(), coldFullName); err != nil {
 		return err
 	}
 
-	archFullName := filepath.Join(lw.config.ArchivePath, tmpName+LogFileExtension)
+	archFullName := filepath.Join(lw.config.ColdPath, coldName)
 
-	// rename (probably copy file) in parallel routine
-	go func(t, a string) {
+	// move cold file into config.ColdPath (could be copy to another disk + delete)
+	// that's why another routine
+	go func(t, a string, errf func(error)) {
 		if err := os.Rename(t, a); err != nil {
-			lw.Write([]byte("\nLog file archiving error!\n" + err.Error()))
+			if errf != nil {
+				errf(err)
+			} // TODO: what to do if errf() not specified
 		}
-	}(tmpFullName, archFullName)
+	}(coldFullName, archFullName, lw.errHandler)
 
-	return lw.createLogFile()
+	return lw.initHotFile()
 }
 
-// Creates active log file "$uid.log"
-func (lw *LogWriter) createLogFile() (err error) {
+// Write 'overrides' the underlying io.Writer's Write method.
+func (lw *LogWriter) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 
-	lw.f, err = os.OpenFile(filepath.Join(lw.config.Path, lw.uid+LogFileExtension), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	lw.Lock()
+
+	lp := len(p)
+	if lw.config.BufferSize > 0 {
+		// if buffering enabled
+		if lp+lw.bufferLen < len(lw.buffer) {
+			// and there is space in the buffer, append
+			copy(lw.buffer[lw.bufferLen:], p)
+			lw.bufferLen += lp
+			lw.Unlock()
+			return lp, nil
+		} else {
+			// if not space in buffer, flush buffer
+			n, err = lw.w.Write(lw.buffer[:lw.bufferLen])
+
+			if err == nil {
+				// copy p[] to the beginning of buffer
+				copy(lw.buffer[0:], p)
+				lw.bufferLen = lp
+			} else {
+				// complaince with http://golang.org/pkg/io/#Writer
+				n = 0
+			}
+		}
+	} else {
+		// if no buffering
+		n, err = lw.w.Write(p)
+	}
+
+	if err != nil {
+		lw.Unlock()
+		return n, err
+	}
+
+	lw.filelen += int64(n)
+
+	if lw.config.HotMaxSize > 0 && lw.config.HotMaxSize < lw.filelen {
+		err = lw.freezeHotFile(false)
+	}
+
+	lw.Unlock()
+	return n, err
+}
+
+// openHotFile opens/creates hot log file "%uid%.log"
+func (lw *LogWriter) initHotFile() (err error) {
+
+	lw.f, err = os.OpenFile(
+		filepath.Join(lw.config.HotPath, fmt.Sprintf("%s.%s", lw.uid, lw.hotFileExtension)),
+		os.O_RDWR|os.O_CREATE|os.O_APPEND,
+		0666)
 
 	if err != nil {
 		return err
@@ -289,12 +508,45 @@ func (lw *LogWriter) createLogFile() (err error) {
 		return err
 	}
 
-	lw.total = fstat.Size()
-	lw.midnigth = time.Now().Truncate(24 * time.Hour).Add(24 * time.Hour)
-	lw.switchTime = time.Time{}
+	lw.filelen = fstat.Size()
 
+	// register lw.f in io.MultiWriter()
 	lw.setMode(lw.config.Mode)
 
 	return nil
+}
 
+func (lw *LogWriter) startTimers() {
+
+	if lw.config.BufferFlushInterval != 0 || lw.config.FreezeAtMidnight || lw.config.FreezeInterval != 0 {
+		cfg := lw.config
+		go lw.runner(cfg)
+	}
+	return
+}
+
+// stopTimers stop timers for triggering actions flush buffer and freeze hot file
+func (lw *LogWriter) stopTimers() {
+
+	lw.RLock()
+	if lw.config.BufferFlushInterval != 0 || lw.config.FreezeAtMidnight || lw.config.FreezeInterval != 0 {
+		lw.RUnlock()
+		lw.stopTimersSignal <- true
+		<-lw.done
+		return
+	}
+	lw.RUnlock()
+	return
+}
+func defaultColdNameFormatter(uid, ext string, d time.Duration) string {
+
+	tformat := "20060102-150405"
+
+	// if d (actually config.FreezeInterval) less than 1 second then file name is extended by microseconds
+	// to ensure uniqueness of file names
+	if d < time.Second && d > 0 {
+		tformat += "-.000000"
+	}
+
+	return fmt.Sprintf("%s-%s.%s", uid, time.Now().Format(tformat), ext)
 }
