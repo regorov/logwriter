@@ -45,8 +45,6 @@ it freezes content of *hot" file by moving content to *cold* files.
 ## Examples
 Using standard log package
 ```
-package main
-
 import (
   "log"
   "time"
@@ -57,12 +55,12 @@ func main() {
 	lw, err := logwriter.NewLogWriter("mywebserver",
 	                                 &logwriter.Config{BufferSize: 0, // no buffering
 	                                                   FreezeInterval : 1 * time.Hour, // create new log every hour
-													   HotMaxSize : 100 * 1024 * 1024 // 100 MB
+							   HotMaxSize : 100 * 1024 * 1024, // 100 MB max file size
 	                                                   HotPath: "/var/log/myweb",
 	                                                   ColdPath: "/var/log/myweb/arch",
 	                                                   Mode: logwriter.ProductionMode},
-				                     true,
-									 nil)
+					 true,
+					 nil)
 	if err != nil {
 		panic(err)
 	}
@@ -71,7 +69,9 @@ func main() {
 	logger.Println("Module started")
 
 
-	lw.Close()
+	if err := lw.Close(); err != nil {
+          // Todo
+        }
 	return
 }
 ```
@@ -94,17 +94,16 @@ func errHandler(err error) {
 
 func main() {
 
-
 	lw, err := logwriter.NewLogWriter("mywebserver",
 	                                 &logwriter.Config{BufferSize: 1024 * 1024, // 1 MB
-	                                                   BufferFlushInterval : 3*time.Second, // flush buffer every 3 sec
+	                                                   BufferFlushInterval : 3 * time.Second, // flush buffer every 3 sec
 	                                                   FreezeInterval : 1 * time.Hour, // create new log every hour
-													   HotMaxSize : 100 * 1024 * 1024 // 100 MB
+							   HotMaxSize : 100 * 1024 * 1024, // or when hot file size over 100 MB
 	                                                   HotPath: "/var/log/myweb",
 	                                                   ColdPath: "/var/log/myweb/arch",
 	                                                   Mode: logwriter.ProductionMode},
-									 false,
-									 errHandler))
+					 false, // do not freeze hot file if exists
+					 errHandler))
 	if err != nil {
 		panic(err)
 	}
@@ -113,11 +112,14 @@ func main() {
   	log.Out = lw
 
 	log.WithFields(logrus.Fields{
-	    "animal": "walrus",
-    	"size":   10,
+		"animal": "walrus",
+        	"size":   10,
   	}).Info("A group of walrus emerges from the ocean")
 
-	lw.Close()
+	if err := lw.Close(); err != nil {
+          // Todo
+        }
+
 	return
 }
 ```
