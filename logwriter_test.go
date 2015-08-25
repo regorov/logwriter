@@ -3,15 +3,18 @@ package logwriter_test
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"github.com/regorov/logwriter"
+	"log"
 	_ "log"
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Replace value with smth close to your typical log item
-var typicalLogItem []byte = bytes.Repeat([]byte("R"), 256)
+var typicalLogItem = append(bytes.Repeat([]byte("R"), 256), '\n')
 
 type dummy struct {
 }
@@ -356,3 +359,28 @@ func BenchmarkLogWriteParallel(b *testing.B) {
 	return
 }
 */
+
+func ExampleNewLogWriter() {
+
+	lw, err := logwriter.NewLogWriter("mywebserver",
+		&logwriter.Config{
+			BufferSize: 2 * logwriter.MB,
+			HotPath:    "",
+			ColdPath:   "",
+			Mode:       logwriter.ProductionMode,
+		},
+		true,
+		nil)
+
+	if err != nil {
+		panic(err)
+	}
+
+	l := log.New(lw, "mywebserver ", log.Ldate|log.Ltime|log.Lmicroseconds)
+
+	l.Println("Mywebserer started at ", time.Now())
+
+	if err := lw.Close(); err != nil {
+		panic(err)
+	}
+}

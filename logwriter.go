@@ -1,11 +1,11 @@
 // Package logwriter offers a rich log file writing tools.
 //
-// There is single "hot" log file per LogWriter.
+// There is single 'hot' log file per LogWriter.
 // Usually file name is similar to servicename name and located in /var/log/servicename.
-// All log items goes into "hot" file.
+// All log items goes into 'hot' file.
 //
 // There are "cold" log files. In accordance to rules specified by Config,
-// logwiter freezes content of "hot" file by moving content to "cold" files.
+// logwiter freezes content of 'hot' file by moving content to 'cold' files.
 package logwriter
 
 import (
@@ -19,15 +19,16 @@ import (
 )
 
 // It is allowed to change default values listed above. Change it before calling NewLogWriter().
+// It's even safe to change if you already have running LogWriter instance.
 var (
-	// Default extension for 'hot' log file.
-	HotFileExtension string = "log"
+	// HotFileExtension holds extension for 'hot' log file.
+	HotFileExtension = "log"
 
-	// Default extension for 'cold' log files.
-	ColdFileExtension string = "log"
+	// ColdFileExtension holds extension for 'cold' log files.
+	ColdFileExtension = "log"
 
-	// Default extension for trace files. (Not implemented yet)
-	TraceFileExtension string = "trc"
+	// TraceFileExtension holds extension for trace files. (Not implemented yet)
+	TraceFileExtension = "trc"
 )
 
 // RunningMode represents application running mode
@@ -35,10 +36,10 @@ type RunningMode int
 
 // Supported running mode options
 const (
-	// Writes to the "hot" file and os.Stdout
+	// DebugMode orders to write log items into "hot" file and os.Stdout
 	DebugMode RunningMode = 0
 
-	// Writes to the "hot" file only
+	// ProductionMode orders to wrire log items to the "hot" file only
 	ProductionMode RunningMode = 1
 )
 
@@ -475,17 +476,17 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 			lw.bufferLen += lp
 			lw.Unlock()
 			return lp, nil
-		} else {
-			// if not space in buffer, flush buffer
-			n, err = lw.w.Write(lw.buffer[:lw.bufferLen])
+		}
 
-			if err == nil {
-				// copy p[] to the beginning of buffer
-				lw.bufferLen = copy(lw.buffer[0:], p)
-			} else {
-				// complaince with http://golang.org/pkg/io/#Writer
-				n = 0
-			}
+		// if no space in the buffer do flush buffer
+		n, err = lw.w.Write(lw.buffer[:lw.bufferLen])
+
+		if err == nil {
+			// copy p[] to the beginning of buffer
+			lw.bufferLen = copy(lw.buffer[0:], p)
+		} else {
+			// complaince with http://golang.org/pkg/io/#Writer
+			n = 0
 		}
 	} else {
 		// if no buffering
