@@ -1,8 +1,8 @@
 # logwriter
 Golang package logwriter automates routine related to logging into files.
 
-## Status
 [![GoDoc](https://godoc.org/github.com/regorov/logwriter?status.svg)](https://godoc.org/github.com/regorov/logwriter)
+
 Initial version finished. Stabilization, testing and benchmarkign are going.
 
 ## Concepts
