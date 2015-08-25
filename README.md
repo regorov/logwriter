@@ -2,6 +2,7 @@
 Golang package logwriter automates routine related to logging into files.
 
 [![GoDoc](https://godoc.org/github.com/regorov/logwriter?status.svg)](https://godoc.org/github.com/regorov/logwriter)
+[![Build Status](https://travis-ci.org/regorov/logwriter.svg?branch=master)](https://travis-ci.org/regorov/logwriter)
 
 Initial version finished. Stabilization, testing and benchmarkign are going.
 
