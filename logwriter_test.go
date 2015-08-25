@@ -3,10 +3,8 @@ package logwriter_test
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"github.com/regorov/logwriter"
 	"log"
-	_ "log"
 	"os"
 	"sync"
 	"testing"
@@ -20,7 +18,8 @@ type dummy struct {
 }
 
 func (d *dummy) Write(p []byte) (int, error) {
-	return len(p), nil
+	n := len(p)
+	return n, nil
 }
 
 type dummyMutex struct {
