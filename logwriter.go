@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	//	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,13 @@ const (
 
 	// Writes to the "hot" file only
 	ProductionMode RunningMode = 1
+)
+
+// Size helpers
+const (
+	KB = 1024
+	MB = 1024 * 1204
+	GB = 1024 * 1024 * 1024
 )
 
 // Config holds parameters of LogWriter instance.
@@ -133,6 +141,12 @@ func NewLogWriter(uid string, cfg *Config, freezeExisting bool, errHanldler func
 
 	if lw.config.BufferSize > 0 {
 		lw.buffer = make([]byte, cfg.BufferSize)
+
+		// Not allow to have cold file size more than specified. Because buffer flushes when it's full
+		if lw.config.HotMaxSize > 0 && (lw.config.HotMaxSize-int64(lw.config.BufferSize) > 0) {
+			lw.config.HotMaxSize -= int64(lw.config.BufferSize)
+
+		}
 	}
 
 	if err := lw.initHotFile(); err != nil {
@@ -141,7 +155,7 @@ func NewLogWriter(uid string, cfg *Config, freezeExisting bool, errHanldler func
 
 	if freezeExisting && lw.filelen > 0 {
 		// non-empty hot log file found and must be frozen
-		if err := lw.freezeHotFile(false); err != nil {
+		if err := lw.freeze(false); err != nil {
 			return nil, err
 		}
 	}
@@ -391,6 +405,7 @@ func (lw *LogWriter) freezeHotFile(byTimer bool) error {
 		lw.Unlock()
 		return err
 	}
+
 	err = lw.freeze(byTimer)
 
 	if lw.config.FreezeInterval != 0 {
@@ -443,17 +458,19 @@ func (lw *LogWriter) freeze(byTimer bool) error {
 
 // Write 'overrides' the underlying io.Writer's Write method.
 func (lw *LogWriter) Write(p []byte) (n int, err error) {
-	if len(p) == 0 {
+
+	lp := len(p)
+	if lp == 0 {
 		return 0, nil
 	}
 
 	lw.Lock()
 
-	lp := len(p)
 	if lw.config.BufferSize > 0 {
+
 		// if buffering enabled
-		if lp+lw.bufferLen < len(lw.buffer) {
-			// and there is space in the buffer, append
+		if lp+lw.bufferLen < lw.config.BufferSize {
+			// and there is space in the buffer to append
 			copy(lw.buffer[lw.bufferLen:], p)
 			lw.bufferLen += lp
 			lw.Unlock()
@@ -464,8 +481,7 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 
 			if err == nil {
 				// copy p[] to the beginning of buffer
-				copy(lw.buffer[0:], p)
-				lw.bufferLen = lp
+				lw.bufferLen = copy(lw.buffer[0:], p)
 			} else {
 				// complaince with http://golang.org/pkg/io/#Writer
 				n = 0
@@ -483,8 +499,8 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 
 	lw.filelen += int64(n)
 
-	if lw.config.HotMaxSize > 0 && lw.config.HotMaxSize < lw.filelen {
-		err = lw.freezeHotFile(false)
+	if lw.config.HotMaxSize > 0 && (lw.config.HotMaxSize < lw.filelen) {
+		err = lw.freeze(false)
 	}
 
 	lw.Unlock()
@@ -509,6 +525,7 @@ func (lw *LogWriter) initHotFile() (err error) {
 	}
 
 	lw.filelen = fstat.Size()
+	fmt.Println("len", lw.filelen)
 
 	// register lw.f in io.MultiWriter()
 	lw.setMode(lw.config.Mode)
@@ -518,7 +535,8 @@ func (lw *LogWriter) initHotFile() (err error) {
 
 func (lw *LogWriter) startTimers() {
 
-	if lw.config.BufferFlushInterval != 0 || lw.config.FreezeAtMidnight || lw.config.FreezeInterval != 0 {
+	if (lw.config.BufferSize > 0 && lw.config.BufferFlushInterval != 0) || lw.config.FreezeAtMidnight ||
+		lw.config.FreezeInterval != 0 {
 		cfg := lw.config
 		go lw.runner(cfg)
 	}
@@ -529,7 +547,7 @@ func (lw *LogWriter) startTimers() {
 func (lw *LogWriter) stopTimers() {
 
 	lw.RLock()
-	if lw.config.BufferFlushInterval != 0 || lw.config.FreezeAtMidnight || lw.config.FreezeInterval != 0 {
+	if (lw.config.BufferSize > 0 && lw.config.BufferFlushInterval != 0) || lw.config.FreezeAtMidnight || lw.config.FreezeInterval != 0 {
 		lw.RUnlock()
 		lw.stopTimersSignal <- true
 		<-lw.done
@@ -540,7 +558,7 @@ func (lw *LogWriter) stopTimers() {
 }
 func defaultColdNameFormatter(uid, ext string, d time.Duration) string {
 
-	tformat := "20060102-150405"
+	tformat := "20060102-150405-.000000"
 
 	// if d (actually config.FreezeInterval) less than 1 second then file name is extended by microseconds
 	// to ensure uniqueness of file names

@@ -1,19 +1,17 @@
 package logwriter_test
 
 import (
+	"bufio"
 	"bytes"
-	"fmt"
 	"github.com/regorov/logwriter"
-	"log"
+	_ "log"
 	"os"
 	"sync"
 	"testing"
-	"time"
-	_ "time"
 )
 
 // Replace value with smth close to your typical log item
-var TypicalLogItem []byte = bytes.Repeat([]byte("R"), 256)
+var typicalLogItem []byte = bytes.Repeat([]byte("R"), 256)
 
 type dummy struct {
 }
@@ -26,9 +24,11 @@ type dummyMutex struct {
 	mu sync.Mutex
 }
 
+var buf = make([]byte, 1024)
+
 func (d *dummyMutex) Write(p []byte) (n int, err error) {
 	d.mu.Lock()
-	n = len(p)
+	copy(buf[128:], p)
 	d.mu.Unlock()
 	return n, nil
 }
@@ -41,7 +41,7 @@ func BenchmarkDummyWriter(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			d.Write(TypicalLogItem)
+			d.Write(typicalLogItem)
 		}
 	})
 
@@ -49,20 +49,138 @@ func BenchmarkDummyWriter(b *testing.B) {
 }
 
 // Dummy write with Mutex
-func BenchmarkDummyWriterMutex(b *testing.B) {
+func BenchmarkDummyWriterWithMutex(b *testing.B) {
 
 	d := &dummyMutex{mu: sync.Mutex{}}
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			d.Write(TypicalLogItem)
+			d.Write(typicalLogItem)
 		}
 	})
 
 	return
 }
 
+// Direct non-buffered file write
+func BenchmarkFileWriteDirect(b *testing.B) {
+
+	f, err := os.OpenFile("test.log", os.O_CREATE|os.O_RDWR, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n, err := f.Write(typicalLogItem)
+		if err != nil {
+			b.Fatal(err, n)
+		}
+	}
+
+	f.Close()
+
+	return
+}
+
+// Buffered file write using bufio
+func BenchmarkFileWriteBufferedByBufio(b *testing.B) {
+
+	f, err := os.OpenFile("test.log", os.O_CREATE|os.O_RDWR, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	buf := bufio.NewWriterSize(f, 1024*1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n, err := buf.Write(typicalLogItem)
+		if err != nil {
+			b.Fatal(err, n)
+		}
+
+		if buf.Available() < 1024*1024-1024 {
+			buf.Flush()
+		}
+	}
+
+	buf.Flush()
+
+	f.Close()
+
+	return
+}
+
+func BenchmarkFileWriteBufferedBySlice(b *testing.B) {
+
+	f, err := os.OpenFile("test.log", os.O_CREATE|os.O_RDWR, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	buf := make([]byte, 1024*1024)
+	k := 0
+	j := 0
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		j = copy(buf[k:], typicalLogItem)
+		k += j
+
+		if k > 1024*1024-1024 {
+			n, err := f.Write(buf[:k])
+			if err != nil {
+				b.Fatal(err, n)
+			}
+			k = 0
+		}
+	}
+	n, err := f.Write(buf[:k])
+	if err != nil {
+		b.Fatal(err, n)
+	}
+
+	f.Close()
+
+	return
+}
+
+func BenchmarkLogWriteBuffered(b *testing.B) {
+
+	// because go test -bench runs Benchmark function a few times
+	if err := os.Remove("test.log"); err != nil {
+		if !os.IsNotExist(err) {
+			b.Fatal(err)
+		}
+	}
+
+	lw, err := logwriter.NewLogWriter("test",
+		&logwriter.Config{BufferSize: 10 * 1024 * 1024,
+			//BufferFlushInterval: 200 * time.Millisecond,
+			//HotMaxSize: 4 * 1024 * 1024,
+			ColdPath: "", Mode: logwriter.ProductionMode}, true, nil)
+
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n, err := lw.Write(typicalLogItem)
+		if err != nil {
+			b.Fatal(err, n)
+		}
+	}
+
+	if err := lw.Close(); err != nil {
+		b.Fatal(err)
+	}
+
+	return
+}
+
+/*
 func TestLogWriter_Write(t *testing.T) {
 
 	lw, err := logwriter.NewLogWriter("writer",
@@ -90,8 +208,10 @@ func TestLogWriter_Write(t *testing.T) {
 
 	return
 }
+*/
 
 // Channel making speed
+/*
 func BenchmarkMakeChan(b *testing.B) {
 
 	//a := make([]chan struct{}, 0)
@@ -126,56 +246,7 @@ func BenchmarkMakeChan(b *testing.B) {
 
 	return
 }
-
-// Direct non-buffered file write
-func BenchmarkFileWriteDirect(b *testing.B) {
-
-	f, err := os.OpenFile("filewritedirect.log", os.O_CREATE|os.O_RDWR, 0)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		s := fmt.Sprintf("%s - %d\n", time.Now().String(), i)
-		f.Write([]byte(s))
-	}
-
-	f.Close()
-
-	return
-}
-
-func BenchmarkFileWriteBuffered(b *testing.B) {
-
-	lw, err := logwriter.NewLogWriter("filewritebuffered",
-		&logwriter.Config{BufferSize: 1024 * 1024,
-			//BufferFlushInterval: 200 * time.Millisecond,
-			HotMaxSize: 4 * 1024 * 1024,
-			ColdPath:   "", Mode: logwriter.ProductionMode}, true, nil)
-
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	lw.Write([]byte("test1\n"))
-	lw.Write([]byte("test2\n"))
-	b.ResetTimer()
-	/*for i := 0; i < b.N; i++ {
-		s := fmt.Sprintf("%s - %d\n", time.Now().String(), i)
-		_, err := lw.Write([]byte(s))
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-	*/
-
-	if err := lw.Close(); err != nil {
-		b.Fatal(err)
-	}
-
-	return
-}
+*/
 
 // Write into the file by standard log package using log.Output()
 /*func BenchmarkStandardLogToFileUsingOutput(b *testing.B) {
@@ -199,6 +270,7 @@ func BenchmarkFileWriteBuffered(b *testing.B) {
 }*/
 
 // Write into the file by standard log package
+/*
 func BenchmarkStandardLogToFileUsingPrint(b *testing.B) {
 
 	f, err := os.OpenFile("standardlog-print.log", os.O_CREATE|os.O_RDWR, 0)
@@ -211,15 +283,16 @@ func BenchmarkStandardLogToFileUsingPrint(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l.Print(TypicalLogItem)
+		l.Print(typicalLogItem)
 	}
 
 	f.Close()
 
 	return
 }
-
+*/
 //
+/*
 func BenchmarkLogWrite(b *testing.B) {
 
 	lw, err := logwriter.NewLogWriter("logwriter",
@@ -246,8 +319,9 @@ func BenchmarkLogWrite(b *testing.B) {
 
 	return
 }
-
+*/
 //
+/*
 func BenchmarkLogWriteParallel(b *testing.B) {
 
 	lw, err := logwriter.NewLogWriter("logwriter-par",
@@ -281,3 +355,4 @@ func BenchmarkLogWriteParallel(b *testing.B) {
 
 	return
 }
+*/
