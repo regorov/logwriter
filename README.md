@@ -3,7 +3,7 @@ Golang package logwriter automates routine related to logging into files.
 
 [![GoDoc](https://godoc.org/github.com/regorov/logwriter?status.svg)](https://godoc.org/github.com/regorov/logwriter)
 [![Build Status](https://drone.io/github.com/regorov/logwriter/status.png)](https://drone.io/github.com/regorov/logwriter/latest)
-[![Build Status](https://drone.io/github.com/regorov/logwriter/status.png)](https://drone.io/github.com/regorov/logwriter/latest)
+[![Coverage Status](https://coveralls.io/repos/regorov/logwriter/badge.svg?branch=master&service=github)](https://coveralls.io/github/regorov/logwriter?branch=master)
 
 Initial version finished. Stabilization, testing and benchmarkign are going.
 
