@@ -124,11 +124,9 @@ func BenchmarkFileWriteBufferedBySlice(b *testing.B) {
 
 	buf := make([]byte, 1024*1024)
 	k := 0
-	j := 0
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		j = copy(buf[k:], typicalLogItem)
-		k += j
+		k += copy(buf[k:], typicalLogItem)
 
 		if k > 1024*1024-1024 {
 			n, err := f.Write(buf[:k])

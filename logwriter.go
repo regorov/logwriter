@@ -356,13 +356,13 @@ func (lw *LogWriter) runner(cfg Config) {
 			lw.done <- true
 			return
 		case _ = <-bufferFlushTimer.C:
-			lw.flushBuffer(true)
+			_ = lw.flushBuffer(true)
 
 			// Reset timer to compensate i/o time
 			_ = bufferFlushTimer.Reset(cfg.BufferFlushInterval)
 			break
 		case _ = <-fileFreezeTimer.C:
-			lw.freezeHotFile(true)
+			_ = lw.freezeHotFile(true)
 
 			// Reset timer to compensate i/o time
 			_ = fileFreezeTimer.Reset(cfg.FreezeInterval)
@@ -376,7 +376,7 @@ func (lw *LogWriter) runner(cfg Config) {
 			if prev.Day() != now.Day() {
 				prev = now
 
-				lw.freezeHotFile(true)
+				_ = lw.freezeHotFile(true)
 
 				if cfg.FreezeInterval != 0 {
 					_ = fileFreezeTimer.Reset(cfg.FreezeInterval)
@@ -525,7 +525,6 @@ func (lw *LogWriter) initHotFile() (err error) {
 	}
 
 	lw.filelen = fstat.Size()
-	fmt.Println("len", lw.filelen)
 
 	// register lw.f in io.MultiWriter()
 	lw.setMode(lw.config.Mode)

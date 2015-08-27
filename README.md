@@ -8,12 +8,15 @@ Golang package logwriter automates routine related to logging into files.
 Initial version finished. Stabilization, testing and benchmarkign are going.
 
 ## Concepts
-### Hot and Cold Log Files
+#### Hot and Cold Log Files
 There is a single **hot** log file. Usually file name is similar to daemon/service name and located in */var/log/servicename/*. There are **cold** log files. In accordance to rules specified by logwriter.Config,
 logwriter freezes content of **hot** file by moving content to new **cold** file.
 
-### Using sync.Mutex
+#### Using sync.Mutex
 If you don't need buffering (logwriter.Config.BufferSize==0) you can believe that file write executes synchronously.
+
+#### Stop! It's not a *unix way
+Well, everyone do not develop facebook or smth similar. If you don't want to 
 
 ## Features
 - [X] Folders for hot and cold log files configurable
