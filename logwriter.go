@@ -9,6 +9,7 @@
 package logwriter
 
 import (
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,9 @@ var (
 
 	// ColdFileExtension holds extension for 'cold' log files.
 	ColdFileExtension = "log"
+
+	// CompressedColdFileExtension holds extension for compressed 'cold' files.
+	CompressedColdFileExtension = "tz"
 
 	// TraceFileExtension holds extension for trace files. (Not implemented yet)
 	TraceFileExtension = "trc"
@@ -74,12 +78,17 @@ type Config struct {
 
 	// Folder where to copy cold file (frozen hot file)
 	ColdPath string
+
+	// CompressColdFile compresses cold file
+	CompressColdFile bool
 }
 
 // LogWriter wraps io.Writer to automate routine with log files.
 type LogWriter struct {
 	w io.Writer
 	sync.RWMutex
+
+	waitGroup *sync.WaitGroup
 
 	// instance configration
 	config Config
@@ -128,6 +137,7 @@ func NewLogWriter(uid string, cfg *Config, freezeExisting bool, errHanldler func
 	lw := &LogWriter{
 		uid:                   uid,
 		RWMutex:               sync.RWMutex{},
+		waitGroup:             &sync.WaitGroup{},
 		stopTimersSignal:      make(chan bool),
 		done:                  make(chan bool),
 		errHandler:            errHanldler,
@@ -190,6 +200,8 @@ func (lw *LogWriter) SetErrorFunc(f func(error)) {
 func (lw *LogWriter) Close() error {
 
 	lw.stopTimers()
+
+	lw.waitGroup.Wait()
 
 	lw.Lock()
 	err := lw.close()
@@ -433,27 +445,81 @@ func (lw *LogWriter) freeze(byTimer bool) error {
 		return nil // TODO: Error
 	}
 
-	coldName := lw.coldFileNameFormatter(lw.uid, lw.coldFileExtension, lw.config.FreezeInterval)
-	coldFullName := filepath.Join(lw.config.HotPath, coldName)
+	tempName := lw.coldFileNameFormatter(lw.uid, lw.coldFileExtension, lw.config.FreezeInterval)
+	tempFullName := filepath.Join(lw.config.HotPath, tempName)
 
 	// rename hot file. Keep cold file in the same folder (it is faster)
-	if err := os.Rename(lw.f.Name(), coldFullName); err != nil {
+	if err := os.Rename(lw.f.Name(), tempFullName); err != nil {
 		return err
 	}
 
-	archFullName := filepath.Join(lw.config.ColdPath, coldName)
+	coldFullName := filepath.Join(lw.config.ColdPath, tempName)
 
 	// move cold file into config.ColdPath (could be copy to another disk + delete)
 	// that's why another routine
-	go func(t, a string, errf func(error)) {
-		if err := os.Rename(t, a); err != nil {
-			if errf != nil {
-				errf(err)
-			} // TODO: what to do if errf() not specified
-		}
-	}(coldFullName, archFullName, lw.errHandler)
+	lw.waitGroup.Add(1)
+	go copyFile(tempFullName, coldFullName, CompressedColdFileExtension, lw.config.CompressColdFile, lw.errHandler, lw.waitGroup)
 
 	return lw.initHotFile()
+}
+
+func copyFile(tempName, coldName string, compressExt string, doCompress bool, errf func(error), wg *sync.WaitGroup) {
+
+	defer wg.Done()
+	f := func(err error) { panic(err) }
+	//if errf == nil {
+	errf = f
+	//}
+
+	if doCompress {
+
+		for {
+			zipFileName := coldName + "." + compressExt
+
+			zipFile, err := os.OpenFile(zipFileName, os.O_WRONLY|os.O_CREATE, 0)
+			if err != nil {
+				errf(err)
+				break
+			}
+
+			inputFile, err := os.OpenFile(tempName, os.O_RDONLY, 0)
+			if err != nil {
+				zipFile.Close()
+				errf(err)
+				break
+			}
+
+			gzipWriter := gzip.NewWriter(zipFile)
+			_, err = io.Copy(gzipWriter, inputFile)
+
+			_ = inputFile.Close()
+			if err == nil {
+				if err = gzipWriter.Close(); err == nil {
+					if err = zipFile.Close(); err == nil {
+						if err = os.Remove(tempName); err == nil {
+							return
+						}
+					}
+				} else {
+					_ = zipFile.Close()
+				}
+			}
+
+			if err != nil {
+				if err = os.Remove(zipFileName); err != nil {
+					errf(err)
+				}
+			}
+			break
+		}
+	}
+
+	// if compressing is not required
+	if err := os.Rename(tempName, coldName); err != nil {
+		if errf != nil {
+			errf(err)
+		} // TODO: what to do if errf() not specified
+	}
 }
 
 // Write 'overrides' the underlying io.Writer's Write method.

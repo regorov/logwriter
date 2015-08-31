@@ -29,6 +29,7 @@ func main() {
 	lw, err := logwriter.NewLogWriter("test",
 		&logwriter.Config{BufferSize: 2 * logwriter.MB,
 			HotMaxSize: 10 * logwriter.MB,
+                        CompressColdFile : true,
 			ColdPath:   "", Mode: logwriter.ProductionMode}, true, nil)
 
 	if err != nil {
@@ -47,11 +48,13 @@ func main() {
 		}
 	}
 
+	fmt.Println("Write duration: ", time.Now().Sub(t))
+
 	if err := lw.Close(); err != nil {
 		fmt.Println(err)
 	}
 
-	fmt.Println("Duration: ", time.Now().Sub(t))
+	fmt.Println("Full duration: ", time.Now().Sub(t))
 
 	return
 }

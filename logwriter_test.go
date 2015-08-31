@@ -156,10 +156,11 @@ func BenchmarkLogWriteBuffered(b *testing.B) {
 	}
 
 	lw, err := logwriter.NewLogWriter("test",
-		&logwriter.Config{BufferSize: 10 * 1024 * 1024,
+		&logwriter.Config{BufferSize: 1 * 1024 * 1024,
 			//BufferFlushInterval: 200 * time.Millisecond,
-			//HotMaxSize: 4 * 1024 * 1024,
-			ColdPath: "", Mode: logwriter.ProductionMode}, true, nil)
+			HotMaxSize:       4 * 1024 * 1024,
+			CompressColdFile: true,
+			ColdPath:         "", Mode: logwriter.ProductionMode}, true, nil)
 
 	if err != nil {
 		b.Fatal(err)

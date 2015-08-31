@@ -16,7 +16,7 @@ logwriter freezes content of **hot** file by moving content to new **cold** file
 If you don't need buffering (logwriter.Config.BufferSize==0) you can believe that file write executes synchronously.
 
 #### Stop! It's not a *unix way
-Well, everyone do not develop facebook or smth similar. If you don't want to 
+Oh nooo. Not everyone develops Facebook (c) or smth similar daily :)
 
 ## Features
 - [X] Folders for hot and cold log files configurable
@@ -28,14 +28,14 @@ Well, everyone do not develop facebook or smth similar. If you don't want to
   - By max file size
   - Every time.Duration
   - Every midnight
-  - When hot log file existed on LogWriter constructed
   - Manually
+  - Freeze when your appication starts
 - [X] File write buffering
-  - Buffer size can be specified
+  - Configurable buffer size
   - Flush buffer every time.Duration
   - Flush buffer manually
 - [X] Update configuration on the fly
-- [ ] Cold log files compression
+- [X] Cold log files compression
 - [ ] Log items re-ordering before persisting
 - [ ] Log items re-ordering on freezing stage
 - [ ] Cold files cleaning
@@ -52,38 +52,44 @@ Well, everyone do not develop facebook or smth similar. If you don't want to
 ## Examples
 Using standard log package
 ```Go
+package main
+
 import (
-  "log"
-  "time"
-  "github/regorov/logwriter"
+	"github.com/regorov/logwriter"
+	"log"
+	"time"
 )
 
 func main() {
+	cfg := &logwriter.Config{
+		BufferSize:       0,                  // no buffering
+		FreezeInterval:   1 * time.Hour,      // freeze log file every hour
+		HotMaxSize:       100 * logwriter.MB, // 100 MB max file size
+		CompressColdFile: true,               // compress cold file
+		HotPath:          "/var/log/mywebserver",
+		ColdPath:         "/var/log/mywebserver/arch",
+		Mode:             logwriter.ProductionMode, // write to file only
+	}
+
 	lw, err := logwriter.NewLogWriter("mywebserver",
-	                                  &logwriter.Config{
-										 BufferSize: 0, // no buffering
- 	                                     FreezeInterval : 1 * time.Hour, // create new log every hour
-							             HotMaxSize : 100 * 1024 * 1024, // 100 MB max file size
-	                                     HotPath: "/var/log/mywebserver",
-	                                     ColdPath: "/var/log/mywebserver/arch",
-	                                     Mode: logwriter.ProductionMode,
-									  },
-									  true, // freeze hot file if exists
-					 				  nil)
+		cfg,
+		true, // freeze hot file if exists
+		nil)
+
 	if err != nil {
+		panic(err)
+	}
+
+	logger := log.New(lw, "mywebserver", log.Ldate|log.Ltime)
+	logger.Println("Module started")
+
+	if err := lw.Close(); err != nil {
 		// Error handling
 	}
 
-	logger := log.New(lw, "mywebserver", log.Ldate | log.Ltime)
-	logger.Println("Module started")
-
-
-	if err := lw.Close(); err != nil {
-        // Error handling
-    }
-
 	return
 }
+
 ```
 
 Using github.com/Sirupsen/logrus
@@ -93,7 +99,7 @@ package main
 import (
   "time"
   "github.com/Sirupsen/logrus"
-  "github/regorov/logwriter"
+  "github.com/regorov/logwriter"
 )
 
 func errHandler(err error) {
