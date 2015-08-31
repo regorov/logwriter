@@ -359,14 +359,15 @@ func BenchmarkLogWriteParallel(b *testing.B) {
 
 func ExampleNewLogWriter() {
 
+	cfg := &logwriter.Config{
+		BufferSize: 2 * logwriter.MB, // write buffering enabled
+		HotPath:    "/var/log/example",
+		ColdPath:   "/var/log/example/arch",
+		Mode:       logwriter.ProductionMode} // write into a file only
+
 	lw, err := logwriter.NewLogWriter("mywebserver",
-		&logwriter.Config{
-			BufferSize: 2 * logwriter.MB,
-			HotPath:    "",
-			ColdPath:   "",
-			Mode:       logwriter.ProductionMode,
-		},
-		true,
+		cfg,
+		true, // freeze log file if it exists
 		nil)
 
 	if err != nil {

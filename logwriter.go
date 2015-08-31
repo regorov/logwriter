@@ -470,19 +470,26 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 
 		// if buffering enabled
 		if lp+lw.bufferLen < lw.config.BufferSize {
-			// and there is space in the buffer to append
+			// there is space in the buffer to append
 			copy(lw.buffer[lw.bufferLen:], p)
 			lw.bufferLen += lp
 			lw.Unlock()
 			return lp, nil
 		}
 
-		// if no space in the buffer do flush buffer
+		// no space in the buffer buffer must be flushed first
 		n, err = lw.w.Write(lw.buffer[:lw.bufferLen])
 
 		if err == nil {
-			// copy p[] to the beginning of buffer
-			lw.bufferLen = copy(lw.buffer[0:], p)
+			if lp < lw.config.BufferSize {
+				// if log item less then buffer size
+				// copy p[] to the beginning of buffer
+				lw.bufferLen = copy(lw.buffer[0:], p)
+			} else {
+				// []p bigger then buffer write directly to
+				n, err = lw.w.Write(p)
+				lw.bufferLen = 0
+			}
 		} else {
 			// complaince with http://golang.org/pkg/io/#Writer
 			n = 0
