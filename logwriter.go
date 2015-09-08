@@ -463,40 +463,42 @@ func (lw *LogWriter) freeze(byTimer bool) error {
 	return lw.initHotFile()
 }
 
-func copyFile(tempName, coldName string, compressExt string, doCompress bool, errf func(error), wg *sync.WaitGroup) {
+func copyFile(fromName, toName string, compressExt string, doCompress bool, errf func(error), wg *sync.WaitGroup) {
 
+	var (
+		zipFile, inputFile *os.File
+		err                error
+	)
 	defer wg.Done()
-	f := func(err error) { panic(err) }
-	//if errf == nil {
-	errf = f
-	//}
 
 	if doCompress {
 
+		zipFileName := toName + "." + compressExt
+
 		for {
-			zipFileName := coldName + "." + compressExt
-
-			zipFile, err := os.OpenFile(zipFileName, os.O_WRONLY|os.O_CREATE, 0)
-			if err != nil {
-				errf(err)
+			// create file with extension .zip
+			if zipFile, err = os.OpenFile(zipFileName, os.O_WRONLY|os.O_CREATE, 0); err != nil {
 				break
 			}
 
-			inputFile, err := os.OpenFile(tempName, os.O_RDONLY, 0)
-			if err != nil {
+			// open file to be compress
+			if inputFile, err = os.OpenFile(fromName, os.O_RDONLY, 0); err != nil {
 				zipFile.Close()
-				errf(err)
 				break
 			}
 
+			// compress inputFile
 			gzipWriter := gzip.NewWriter(zipFile)
 			_, err = io.Copy(gzipWriter, inputFile)
 
+			// inputFile is read only. Ignore error
 			_ = inputFile.Close()
+
 			if err == nil {
+				// if no error during compression
 				if err = gzipWriter.Close(); err == nil {
 					if err = zipFile.Close(); err == nil {
-						if err = os.Remove(tempName); err == nil {
+						if err = os.Remove(fromName); err == nil {
 							return
 						}
 					}
@@ -506,20 +508,23 @@ func copyFile(tempName, coldName string, compressExt string, doCompress bool, er
 			}
 
 			if err != nil {
-				if err = os.Remove(zipFileName); err != nil {
-					errf(err)
-				}
+				_ = os.Remove(zipFileName)
 			}
 			break
 		}
+
+		if err != nil && errf != nil {
+			errf(err)
+		}
+		return
 	}
 
-	// if compressing is not required
-	if err := os.Rename(tempName, coldName); err != nil {
-		if errf != nil {
-			errf(err)
-		} // TODO: what to do if errf() not specified
+	err = os.Rename(fromName, toName)
+	if err != nil && errf != nil {
+		errf(err)
 	}
+
+	return
 }
 
 // Write 'overrides' the underlying io.Writer's Write method.

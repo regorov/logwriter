@@ -15,8 +15,20 @@ logwriter freezes content of **hot** file by moving content to new **cold** file
 #### Using sync.Mutex
 If you don't need buffering (logwriter.Config.BufferSize==0) you can believe that file write executes synchronously.
 
+#### Error Handling
+There is set of background routines what can face critital i/o errors. Specify callback function f(error) in NewLogWriter() what 
+will be called every time then background routines catch an error. Possible cases:
+- No free space at config.ColdPath
+- No free space at config.HotPath
+- Permission denied
+- ...
+
+You error handler function calls in sync mode and blocks log writing. Please, do not do long operations there.
+
 #### Stop! It's not a *unix way
 Oh nooo. Not everyone develops Facebook (c) or smth similar daily :)
+
+
 
 ## Features
 - [X] Folders for hot and cold log files configurable
@@ -29,7 +41,7 @@ Oh nooo. Not everyone develops Facebook (c) or smth similar daily :)
   - Every time.Duration
   - Every midnight
   - Manually
-  - Freeze when your appication starts
+  - Freeze when your application starts
 - [X] File write buffering
   - Configurable buffer size
   - Flush buffer every time.Duration
