@@ -477,7 +477,7 @@ func copyFile(fromName, toName string, compressExt string, doCompress bool, errf
 
 		for {
 			// create file with extension .zip
-			if zipFile, err = os.OpenFile(zipFileName, os.O_WRONLY|os.O_CREATE, 0); err != nil {
+			if zipFile, err = os.OpenFile(zipFileName, os.O_WRONLY|os.O_CREATE, 0600); err != nil {
 				break
 			}
 
